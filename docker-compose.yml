@@ -17,6 +17,7 @@ services:
 
   bot:
     build: .
+    # Requires .env to exist: run `cp .env.example .env` and fill in BOT_TOKEN before `docker compose up`
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://memento:memento@db:5432/memento

@@ -28,4 +28,8 @@ async def parse_deadline(natural_language: str) -> str:
             }
         ],
     )
+    from bot.shared.exceptions import DeadlineParseError
+
+    if not message.content or not hasattr(message.content[0], "text"):
+        raise DeadlineParseError("Claude returned no text content")
     return message.content[0].text.strip()
