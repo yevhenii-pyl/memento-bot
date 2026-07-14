@@ -3,28 +3,35 @@ import asyncio
 import logging
 import sys
 
-from aiogram import Bot, Dispatcher
 
-from bot.config import settings
-from bot.shared.db import DbSessionMiddleware
-from bot.shared.scheduler import create_scheduler
+def _load_settings():
+    try:
+        from bot.config import settings
 
-
-def build_dispatcher() -> Dispatcher:
-    dp = Dispatcher()
-    dp.update.middleware(DbSessionMiddleware())
-    return dp
+        return settings
+    except Exception as exc:
+        print(
+            "ERROR: Required environment variables are not set.\n"
+            f"Details: {exc}\n"
+            "Copy .env.example to .env and fill in the values.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 async def main() -> None:
+    settings = _load_settings()
+
     logging.basicConfig(level=settings.LOG_LEVEL, stream=sys.stdout)
 
-    if not settings.BOT_TOKEN:
-        logging.error("BOT_TOKEN is not set — exiting.")
-        sys.exit(1)
+    from aiogram import Bot, Dispatcher
+
+    from bot.shared.db import DbSessionMiddleware
+    from bot.shared.scheduler import create_scheduler
 
     bot = Bot(token=settings.BOT_TOKEN)
-    dp = build_dispatcher()
+    dp = Dispatcher()
+    dp.update.middleware(DbSessionMiddleware())
 
     scheduler = create_scheduler()
     scheduler.start()

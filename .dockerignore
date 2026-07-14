@@ -1,0 +1,16 @@
+.venv/
+.git/
+.claude/
+.worktrees/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.env
+.env.test
+docs/
+*.md
+.github/
