@@ -25,6 +25,7 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "types-python-dateutil",
+    "psycopg2-binary>=2.9",
 ]
 
 [tool.setuptools.packages.find]
