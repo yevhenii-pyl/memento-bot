@@ -312,10 +312,13 @@ not memory.
 
 | # | Title | Status | Section |
 |---|---|---|---|
-| <NNNN> | <imperative — e.g. "Use a sliding-window counter for rate limiting"> | Accepted | §<N> |
-| <NNNN> | <imperative — e.g. "Co-locate the worker in the API process"> | Accepted | §<N> |
+| 0001 | Schedule durable per-task timers via APScheduler with a PostgreSQL job store | Accepted | §4, §5, §7 |
+| 0002 | Parse deadlines synchronously in the task-creation flow | Accepted | §4, §6 |
+| 0003 | Identify the Master by config and Workers by prior DM registration | Accepted | §4, §8 |
+| 0004 | Store timestamps as UTC and anchor relative deadlines to MASTER_TIMEZONE | Accepted | §4, §8 |
+| 0005 | Model the task lifecycle as a status field with state-checked idempotency | Accepted | §4, §6, §8 |
 
-ADR files live under `docs/features/<slug>/adr/NNNN-<title>.md`.
+ADR files live under `docs/features/memento-task-core/adr/NNNN-<title>.md`.
 
 ## 10. Quality requirements
 
@@ -326,22 +329,24 @@ ADR files live under `docs/features/<slug>/adr/NNNN-<title>.md`.
      round ≤250ms to ≤300ms — that's a critic F6 hit).
      📌 e.g. «p95 ≤ 500 ms on a block update, verified by a 100 req/s load test». -->
 
-Each top-3 goal from §1 expanded into a full scenario:
+Each top-3 goal from §1 expanded into a full scenario (numbers quoted verbatim from spec §6):
 
-**QG-1. <quality attribute>**
-- **When:** <trigger condition>
-- **Then:** <expected behaviour with numbers from spec §6 NFR>
-- **How verify:** <test / chaos drill / load test / metric>
+**QG-1. Notification timing reliability**
+- **When:** the bot process restarts between a task's creation and its scheduled reminder/outcome jobs.
+- **Then:** zero scheduled jobs are lost across the restart, and each reminder and outcome prompt fires within ≤ 60 s of its scheduled time.
+- **How verify:** integration test — schedule a job → restart the process → confirm the job fires (SQLAlchemy job store); and compare job fire timestamp vs scheduled time in logs for drift ≤ 60 s.
 
-**QG-2. <quality attribute>**
-- **When:** <trigger>
-- **Then:** <expected>
-- **How verify:** <how>
+**QG-2. Audit-trail integrity**
+- **When:** the Master taps an outcome button, and a non-Master attempts a privileged action, and a stale/duplicate outcome tap arrives.
+- **Then:** only the Master's action is recorded (≥ 99% notification delivery success for registered Workers on the resulting notifications); a duplicate/stale tap does not change the recorded outcome (idempotent, AC-13); non-Master privileged actions are denied.
+- **How verify:** unit + integration tests for authz (AC-10, AC-11) and outcome idempotency (AC-13); log + alert on DM delivery failures to track the ≥ 99% delivery target.
 
-**QG-3. <quality attribute>**
-- **When:** <trigger>
-- **Then:** <expected>
-- **How verify:** <how>
+**QG-3. Task-creation responsiveness**
+- **When:** a Master or Worker sends `/task` with a natural-language deadline (including the Claude parse).
+- **Then:** task creation completes end-to-end at p95 ≤ 5 s.
+- **How verify:** per-request timing logged in the task handler; assert the p95 ≤ 5 s target from the timing logs.
+
+_Availability (≥ 99.5% uptime, monthly window) is tracked via a process monitor + polling health check (spec §6, §7) as a supporting operational target below the top-3._
 
 ## 11. Risks and technical debt
 
@@ -355,12 +360,15 @@ Each top-3 goal from §1 expanded into a full scenario:
 
 | Risk / debt | Severity | Mitigation | Owner |
 |---|---|---|---|
-| <e.g. Worker lag may reach hours during a downstream outage> | Medium | <alert >10 min, on-call playbook, retry backoff> | <DevOps> |
-| <e.g. No event-schema versioning in v1> | Medium | <ADR-NNNN planned for v2, tolerate unknown fields> | <Backend> |
-| Open architectural decision: <decision-headline> | Open question | Resolve before <stage trigger or YYYY-MM-DD>; <inline rationale from the Save-as-OQ> | <owner> |
+| Synchronous Claude parse on the creation path — a slow/unavailable Claude API blocks `/task` and eats the p95 ≤ 5 s budget (ADR-0002) | Medium | Timeout on the Claude call; monitor task-creation p95; move to async background parse if the budget is breached | Backend |
+| Single bot instance is a hard scaling ceiling — the in-process scheduler + PostgreSQL job store assume one replica (ADR-0001) | Medium | Documented constraint; scale-out path = external job store (Redis) / dedicated scheduler, only if a second team/instance is needed | Backend |
+| Long-polling instead of webhook — added end-to-end latency vs a webhook deployment | Low | Acceptable for v1 team scale; switch to webhook before production if latency matters (architecture-map) | DevOps |
+| Status is mutated in place — no per-transition history beyond `extension_count`, `resolved_at`, and the extension timestamp | Low | Sufficient for the v1 audit trail + future stats; add an event log only if per-transition audit is later required | Backend |
+| Open architectural decision: pending-limbo escalation — should the Master be re-prompted after 24 h of no action on an outcome prompt? | Open question | Resolve before `sdd:tasks`; default now = no auto-escalation in v1, the task stays pending (spec §8) | Product Owner |
 
 **Accepted debt (acceptable in v1, plan to fix later):**
-- <e.g. the entity is immutable / unversioned — OK for v1, may need audit versioning in v2>
+- Synchronous deadline parsing blocks the handler (ADR-0002) — acceptable within the ≤ 5 s budget; revisit if Claude latency grows.
+- Single-instance scheduler (ADR-0001) — no HA/failover for timers in v1; a restart is safe (durable job store) but a prolonged process outage delays firings until recovery.
 
 ## 12. Glossary
 
@@ -371,6 +379,12 @@ Each top-3 goal from §1 expanded into a full scenario:
 
 | Term | Meaning |
 |---|---|
-| <e.g. domain object A> | <its meaning in this domain> |
-| <e.g. domain object B> | <its meaning> |
-| <e.g. domain invariant name> | <the rule, in plain language> |
+| Master | The single privileged user (identified by `MASTER_TELEGRAM_ID`) who assigns tasks to others and records Done/Failed/Extended verdicts. Not a DB role — a config identity. |
+| Worker | A team member who self-commits or is assigned tasks and receives reminders/verdicts. A *registered* Worker has previously DM'd the bot (has a users row). |
+| Task | A captured commitment: assignee (Worker), overseer (Master), title, deadline, status, `resolved_at`, and `extension_count`. |
+| deadline | A point in time extracted from natural-language input and stored as a tz-aware UTC timestamp. NOT the reminder (which fires before it). |
+| open / done / failed | Task lifecycle statuses. `open` = awaiting outcome; `done`/`failed` = Master verdict recorded; Extend re-opens with a new deadline. |
+| Extend | A Master outcome that sets a new future deadline (≥ 5 min out), increments `extension_count`, resets status to `open`, and reschedules both jobs. |
+| outcome prompt | The private Done/Failed/Extended message sent to the Master at the deadline. Only the Master receives an actionable prompt. |
+| outcome idempotency | The invariant (AC-13) that a stale or duplicate outcome tap does not change the recorded outcome — enforced by a task-state check. |
+| MASTER_GROUP_CHAT_ID / MASTER_TIMEZONE | The one group chat where `/task` is honoured; the one IANA timezone used to parse relative deadlines and format all user-facing times. |
