@@ -253,6 +253,142 @@ sequenceDiagram
 > `extension_count`), resets status to `open`, and reschedules both jobs (ADR-0001, ADR-0005).
 > The full per-AC sequence set is produced by the `sequences` stage.
 
+### Flow 3: Worker self-commit (US-02) — AC-02, AC-09, AC-12
+
+```mermaid
+sequenceDiagram
+    actor Worker
+    actor Master
+    participant service
+    participant ES as ext-system
+    participant DS as data-store
+    participant MB as msg-bus
+    note over Worker,MB: Precondition — Worker is registered (users row exists); /task has no @mention
+    Worker->>service: /task <desc> <deadline> (in MASTER_GROUP_CHAT_ID, no @mention)
+    service->>service: no @mention → self-commit; verify sender is registered
+    alt registered sender, deadline resolves to a future time
+        service->>ES: parse deadline text (MASTER_TIMEZONE anchor)
+        ES-->>service: ISO datetime
+        service->>DS: insert task (assignee=sender, overseer=Master, status=open)
+        note over service,DS: persists Task
+        service->>MB: schedule reminder (T-5 min) + outcome prompt (T)
+        note over service,MB: persists two Scheduler jobs
+        service->>Worker: DM — task acknowledged (title + deadline in MASTER_TIMEZONE)
+        service->>Master: DM — new commitment from Worker (title + deadline)
+        service->>Worker: group chat confirmation (Worker name, title, deadline)
+    else unresolved or past deadline (AC-09)
+        service-->>Worker: group chat error — explain and ask to rephrase with clearer time reference
+    else sender not registered (AC-12)
+        service-->>Worker: group chat error — sender must start the bot in private first
+    end
+    note over Worker,MB: Postcondition (happy) — task persisted status=open; two scheduler jobs active; Worker DM'd; Master notified
+```
+
+### Flow 4: Scheduler fires pre-deadline reminder (US-03) — AC-03
+
+```mermaid
+sequenceDiagram
+    actor Worker
+    participant MB as msg-bus
+    participant service
+    participant DS as data-store
+    note over MB,DS: Precondition — Task status=open; reminder job persisted and scheduled for T-5 min (or fires immediately if <5 min remained at creation)
+    MB->>service: fire reminder job (task_id, idempotency_key=reminder:task_id:deadline)
+    service->>DS: load task by task_id
+    DS-->>service: task record
+    alt task status is open (idempotency check passes)
+        service->>Worker: DM — reminder: task title + deadline in MASTER_TIMEZONE
+        note over service,Worker: retry 3 times with exponential backoff on Telegram delivery failure
+        alt DM delivered
+            note over service: log fire timestamp — drift monitored against scheduled time (≤ 60 s target)
+        else DM fails after 3 retries
+            service->>DS: persist delivery failure record
+            note over service,DS: dead-letter — alert on ≥ 1% delivery failure rate
+        end
+    else task no longer open (resolved or extended past this deadline)
+        note over service: log stale reminder — skip; no-op
+    end
+    note over MB,DS: Postcondition (happy) — Worker DM'd with reminder; fire timestamp logged for drift monitoring
+```
+
+### Flow 5: Master extends deadline (US-04, US-05, US-06) — AC-06, AC-14
+
+```mermaid
+sequenceDiagram
+    actor Master
+    actor Worker
+    participant service
+    participant ES as ext-system
+    participant DS as data-store
+    participant MB as msg-bus
+    note over Master,MB: Precondition — outcome prompt active; Master taps "Extended" (idempotency guard from Flow 2 already passed; task is open and awaiting outcome)
+    Master->>service: tap "Extended" button (callback)
+    service->>DS: load task (confirm status=open, awaiting outcome for this deadline)
+    DS-->>service: task record
+    service->>Master: DM — enter new deadline (FSM: awaiting_new_deadline)
+    Master->>service: sends new deadline text (FSM reply)
+    service->>ES: parse new deadline text (MASTER_TIMEZONE anchor)
+    ES-->>service: ISO datetime or unresolved
+    alt resolved and ≥ 5 min in the future
+        service->>MB: unschedule old reminder + outcome jobs
+        service->>DS: update task (new deadline, extension_count++, status=open, extension_timestamp=now)
+        note over service,DS: persists Task (extension record)
+        service->>MB: schedule new reminder (T-5 min) + outcome prompt (new T)
+        note over service,MB: persists two new Scheduler jobs
+        service->>Worker: DM — task extended (title + new deadline in MASTER_TIMEZONE)
+        service-->>Master: DM — extension recorded; accountability loop restarted
+    else resolved but < 5 min in future or in the past (AC-14)
+        service-->>Master: DM — deadline rejected; must be ≥ 5 min in the future; please re-enter
+    else unresolved deadline text
+        service-->>Master: DM — deadline not understood; please re-enter with a clearer time reference
+    end
+    note over Master,MB: Postcondition (happy) — task status=open with new deadline; old jobs replaced; Worker DM'd; extension_count incremented
+```
+
+### Flow 6: Worker lists own open tasks (US-07) — AC-07
+
+```mermaid
+sequenceDiagram
+    actor Worker
+    participant service
+    participant DS as data-store
+    note over Worker,DS: Precondition — Worker is registered; command sent in private chat with the bot
+    Worker->>service: list-tasks command (private chat)
+    service->>DS: query open tasks (assignee=Worker, status=open)
+    DS-->>service: list of task records (title + deadline)
+    alt one or more open tasks exist
+        service->>Worker: DM — list of open tasks (title + deadline in MASTER_TIMEZONE for each; re-extended tasks appear identically to new open tasks)
+    else no open tasks
+        service->>Worker: DM — no open tasks
+    end
+    note over Worker,DS: Postcondition — Worker sees all active commitments or a "none" message
+```
+
+### Flow 7: Master lists a Worker's open tasks (US-08) — AC-08
+
+```mermaid
+sequenceDiagram
+    actor Master
+    participant service
+    participant DS as data-store
+    note over Master,DS: Precondition — Master is identified by MASTER_TELEGRAM_ID; command sent to bot specifying a Worker
+    Master->>service: list-tasks command (private chat, Worker specified)
+    service->>DS: query open tasks (assignee=specified Worker, status=open)
+    DS-->>service: list of task records (title + deadline)
+    alt one or more open tasks exist for that Worker
+        service->>Master: DM — list of open tasks for Worker (title + deadline in MASTER_TIMEZONE; re-extended tasks appear identically)
+    else no open tasks for that Worker
+        service->>Master: DM — no open tasks for that Worker
+    end
+    note over Master,DS: Postcondition — Master sees all active commitments owed by that Worker or a "none" message
+```
+
+---
+
+**AC-11 — Non-runtime N/A:** The outcome prompt is sent exclusively to `MASTER_TELEGRAM_ID` inside the job function at schedule time; no separate runtime flow exists for this invariant.
+
+**Flag — retry shape (Flow 4):** "3 retries with exponential backoff" is a working assumption; spec §6 specifies ≥ 99% delivery but not retry count or backoff strategy. Consider a `decide-adr` if the team wants this pinned before implementation.
+
 ## 7. Deployment view
 
 <!-- 🎯 Why: the TOPOLOGY DevOps must know without reading the deploy charts — how many replicas,

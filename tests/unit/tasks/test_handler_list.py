@@ -3,6 +3,8 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from aiogram.exceptions import TelegramAPIError
+
 MASTER_TG_ID = 100000001
 WORKER_TG_ID = 200000001
 _SVC = "bot.tasks.handler"
@@ -160,7 +162,7 @@ async def test_tasks_command_worker_not_found_replies_error(mock_settings, monke
     msg.answer = AsyncMock()
 
     bot = AsyncMock()
-    bot.get_chat = AsyncMock(side_effect=Exception("not found"))
+    bot.get_chat = AsyncMock(side_effect=TelegramAPIError(method=MagicMock(), message="not found"))
 
     await handle_tasks_command(msg, session=AsyncMock(), bot=bot)
 

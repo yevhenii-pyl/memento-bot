@@ -182,6 +182,8 @@ No direct competitive equivalent closes all three steps in a single Telegram-nat
 ## 8. Open questions
 
 - [ ] Pending limbo escalation: should Master receive a re-prompt after 24 h of no action on an outcome prompt? Default now: no auto-escalation in v1 — task stays pending. — owner: Product Owner, due: before sdd:tasks
+- [ ] `update_display_name` (users/repo.py) relies on ORM `onupdate=func.now()` for `updated_at` rather than setting it explicitly, unlike tasks/repo.py mutators. DB-observable outcome is correct; fix is cosmetic parity. Test for /start only asserts `display_name`, not `updated_at`. — owner: Tech Lead, due: before next feature touching users
+- [ ] `_split_body` deadline heuristic (tasks/handler.py:34-45) splits on the first keyword in `[by, until, before, in, at, due, on]`; multi-word titles containing those words produce a truncated title and a long deadline tail. Claude may still parse correctly; AC-09 error path is the safety net. Known v1 fragility — owner: Tech Lead, due: before stats feature (feeds task titles into reports)
 
 ---
 

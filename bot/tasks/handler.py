@@ -4,6 +4,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -107,7 +108,7 @@ async def handle_task_command(
         try:
             chat = await bot.get_chat(mention_username)
             assignee_mention_id = chat.id
-        except Exception:
+        except TelegramAPIError:
             await message.answer(
                 "The named person must start the bot in private"
                 " before tasks can be assigned to them."
@@ -275,7 +276,7 @@ async def handle_tasks_command(
                 try:
                     chat = await bot.get_chat(username)
                     assignee_tg_id = chat.id
-                except Exception:
+                except TelegramAPIError:
                     await message.answer("I don't recognise that user.")
                     return
                 break
