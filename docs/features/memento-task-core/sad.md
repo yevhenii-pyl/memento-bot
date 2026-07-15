@@ -136,39 +136,48 @@ Each tactical decision in later sections should trace to one of these seeds. Tac
      just one surface's container — swap/add per what was declared in §4. → _shared/surfaces.md
      📌 e.g. «web app, content API, media worker, datastore, object store, CDN». -->
 
-<One paragraph: layered / hexagonal / clean / event-driven, and why.>
+The system is a **layered feature-module monolith** (per `CLAUDE.md`). Each feature is a folder
+`bot/<feature>/` with four layers: `handler.py` (aiogram `Router` — receives updates, calls the
+service), `service.py` (business logic — orchestrates repos, raises domain exceptions),
+`repo.py` (all SQL — receives an `AsyncSession`, returns domain objects), `models.py` (ORM). It is
+deliberately not hexagonal: the repo layer *is* the port to Postgres. Inter-module calls are direct
+async function calls — `notifications` may import `tasks` and `users`; no other cross-module imports.
 
-**Internal decomposition:**
+**Internal decomposition (modules touched by this feature):**
 
 ```
-<e.g. modules/<feature>/>
-├── domain/       <entities + sentinel errors>
-├── app/          <use cases / services>
-├── infra/        <repository + integration impl>
-├── ports/        <handlers, DTOs, error mapping>
-└── wiring        <self-wiring entry point>
+bot/
+├── main.py            entry point — wires Dispatcher, includes feature routers, starts scheduler
+├── config.py          Pydantic Settings — MASTER_TELEGRAM_ID, MASTER_GROUP_CHAT_ID, MASTER_TIMEZONE, …
+├── tasks/             handler · service · repo · models — /task capture, outcome-button FSM, task lifecycle
+├── users/             handler · service · repo · models — /start registration, Master/Worker lookup
+├── notifications/     service · jobs — message builders + APScheduler reminder/outcome job functions
+└── shared/            db (session middleware) · scheduler · claude_client · exceptions
 ```
 
-**C4 Container (L2):** <!-- syntax → references/c4-mermaid-syntax.md. Real names, no <placeholder> stubs. ONE Container per declared target_surface (frontmatter); the web container below is one example surface. -->
+**C4 Container (L2):**
 
 ```mermaid
 C4Container
-    title <feature> — Containers
+    title memento-task-core — Containers
 
-    Person(actor, "<Actor>")
+    Person(master, "Master")
+    Person(worker, "Worker")
 
-    Container_Boundary(app, "<Our system>") {
-        Container(web, "<Web/UI>", "<technology>", "<purpose>")
-        Container(api, "<API/handler>", "<technology>", "<purpose>")
-        ContainerDb(db, "<Datastore>", "<technology>", "<purpose>")
+    Container_Boundary(memento, "Memento bot") {
+        Container(bot, "Bot process", "Python 3.12 / aiogram 3", "Handles Telegram updates, routes to feature modules (tasks/users/notifications), runs the in-process AsyncIOScheduler")
+        ContainerDb(pg, "PostgreSQL", "PostgreSQL 16", "Tasks, users, and the APScheduler job store")
     }
 
-    System_Ext(ext, "<External>", "<purpose>")
+    System_Ext(telegram, "Telegram", "Messaging platform")
+    System_Ext(claude, "Claude API", "Deadline parsing")
 
-    Rel(actor, web, "<interaction>", "<protocol>")
-    Rel(web, api, "<calls>")
-    Rel(api, db, "<reads/writes>", "<driver>")
-    Rel(api, ext, "<emits>", "<protocol>")
+    Rel(master, telegram, "sends /task, taps outcome buttons", "Telegram")
+    Rel(worker, telegram, "sends /task, reads reminders", "Telegram")
+    Rel(telegram, bot, "delivers updates & callbacks", "long-polling")
+    Rel(bot, telegram, "sends messages + inline keyboards", "Bot API")
+    Rel(bot, claude, "parses deadline text", "HTTPS")
+    Rel(bot, pg, "reads/writes tasks, users, jobs", "async SQLAlchemy / asyncpg")
 ```
 
 ## 6. Runtime view
