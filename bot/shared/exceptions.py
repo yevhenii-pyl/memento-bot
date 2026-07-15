@@ -18,6 +18,10 @@ class DeadlineTooSoonError(MementoError):
     pass
 
 
+class DeadlineInPastError(MementoError):
+    pass
+
+
 class OutcomeAlreadyRecordedError(MementoError):
     pass
 
