@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     ANTHROPIC_API_KEY: str
 
+    MASTER_TELEGRAM_ID: int
+    MASTER_GROUP_CHAT_ID: int
+    MASTER_TIMEZONE: str = "UTC"
+
     CLAUDE_MODEL: str = "claude-sonnet-4-6"
     LOG_LEVEL: str = "INFO"
 
