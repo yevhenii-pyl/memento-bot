@@ -262,18 +262,23 @@ sequenceDiagram
      🎯 N/A allowed for XS/S that reuses an existing deployment unit with no change.
      Deployment-diagram scaffold → templates/deployment.md. -->
 
-<Topology in 2–3 sentences. Where it runs, replicas, scaling thresholds.>
+A single **bot process** container and one **PostgreSQL 16** container, orchestrated by Docker
+Compose (`docker compose up`); migrations run via `docker compose run bot alembic upgrade head`.
+Exactly one replica of the bot — the in-process `AsyncIOScheduler` and its PostgreSQL job store
+assume a single instance (ADR-0001). The bot uses aiogram long-polling in v1 (no inbound webhook
+endpoint to expose). Durable scheduled jobs survive container restarts because they live in Postgres,
+not memory.
 
-**Monitoring:**
-- <Metrics — e.g. `<metric_name>`>
-- <Alerts — e.g. «worker lag > 10 min → page on-call»>
-- <Tracing — e.g. spans on the request boundary>
+**Monitoring** (each maps to a spec §6 measurement):
+- Per-request task-creation timing logged in the task handler → task-creation latency p95 ≤ 5 s.
+- Job fire timestamp vs scheduled time logged on every reminder/outcome job → drift ≤ 60 s.
+- DM send outcome logged; **alert** on DM delivery-failure rate → notification delivery ≥ 99%.
+- Process monitor + a polling health check → availability ≥ 99.5% (monthly window).
+- **Alert:** scheduler job fire drift > 60 s, or the bot process down.
 
 **Scaling thresholds:**
-- <e.g. comfortable in one table up to N rows/year>
-- <e.g. partition by quarter above N rows/year>
-
-<!-- For XS/S with no deployment change: <!-- N/A: reuses existing deployment unit, no infra change --> -->
+- One team's volume (KPI target ≥ 5 tasks/work-day) is trivial for a single Postgres instance — no partitioning foreseen for years.
+- Single instance is a hard ceiling for the in-process scheduler: horizontal scaling requires moving the job store to an external system (e.g. Redis) or a dedicated scheduler service (§11). Not needed in v1.
 
 ## 8. Crosscutting concepts
 
@@ -285,13 +290,18 @@ sequenceDiagram
 
 | Concept | Convention | Where defined |
 |---|---|---|
-| Logging | <e.g. structured, fields `module=<name>`> | <convention file §X or here> |
-| Authentication | <e.g. token-based via middleware> | <convention file §X> |
-| Error handling | <e.g. domain sentinel → ports error mapping → JSON> | <convention file §X> |
-| ID strategy | <e.g. sortable time-based ID in the app layer> | <convention file §X> |
-| Internationalisation | <e.g. N/A, single language> | — |
-| Observability | <e.g. tracing on the request boundary> | — |
-| Events | <module-specific patterns, if any> | <here> |
+| Authorization | On every group `/task` and every outcome callback, compare the caller's Telegram user ID against `MASTER_TELEGRAM_ID` / a registered-user row; act only on IDs, never display names | ADR-0003, spec §6.1 |
+| Registration | A Worker row is persisted on first `/start`; "registered" = a users row exists (predicate for AC-12) | ADR-0003, `bot/users/` |
+| Error handling | Services raise domain exceptions from `bot/shared/exceptions.py`; handlers catch them and send a user-facing reply; no bare `except` outside `main.py` | `CLAUDE.md`, `bot/shared/exceptions.py` |
+| DB session access | Handlers/services receive an `AsyncSession` injected by `DbSessionMiddleware`; never instantiate sessions directly | `CLAUDE.md`, `bot/shared/db.py` |
+| ID strategy | Primary keys are `UUID` (`uuid.uuid4()`), stored as PostgreSQL `UUID` | `CLAUDE.md` |
+| Time & timezone | Store tz-aware UTC; parse relative deadlines against `MASTER_TIMEZONE` at receipt; format all user-facing times via one shared `MASTER_TIMEZONE` helper | ADR-0004, `bot/config.py` |
+| Outcome idempotency | The outcome callback re-reads the task and no-ops unless it is still awaiting an outcome for the prompt's deadline (guards stale/replayed taps and post-Extend re-open) | ADR-0005, `bot/tasks/service.py` |
+| Scheduling | Two jobs per task (reminder T-5min, outcome T) in the PostgreSQL job store; unschedule on resolve, reschedule both on Extend; all job functions live in `notifications/jobs.py`, given a `bot` instance at schedule time | ADR-0001, `CLAUDE.md`, `bot/notifications/jobs.py` |
+| Claude API access | All Anthropic calls go through `bot/shared/claude_client.py`; feature modules never import `anthropic` | `CLAUDE.md`, `bot/shared/claude_client.py` |
+| Notification delivery | DM send outcomes are logged; delivery failures are alerted; deliver only to registered Workers (have a private chat with the bot) | §7, spec §6 |
+| Logging / observability | Structured logs: per-request task-creation timing (task handler) + job fire-vs-scheduled drift (notification jobs) | §7, spec §6 |
+| Internationalisation | N/A — single team language; times localised to `MASTER_TIMEZONE` only | — |
 
 ## 9. Architecture decisions
 
