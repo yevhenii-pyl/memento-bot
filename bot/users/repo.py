@@ -21,3 +21,9 @@ async def create_user(session: AsyncSession, telegram_id: int, display_name: str
     session.add(user)
     await session.flush()
     return user
+
+
+async def update_display_name(session: AsyncSession, user: User, display_name: str) -> User:
+    user.display_name = display_name
+    await session.flush()
+    return user

@@ -10,4 +10,6 @@ async def register_or_get(session: AsyncSession, telegram_id: int, display_name:
         user = await users_repo.create_user(
             session, telegram_id=telegram_id, display_name=display_name
         )
+    else:
+        user = await users_repo.update_display_name(session, user, display_name)
     return user

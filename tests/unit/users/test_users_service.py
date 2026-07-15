@@ -52,6 +52,28 @@ async def test_register_or_get_creates_new_user(monkeypatch):
     )
 
 
+async def test_register_or_get_updates_display_name_on_re_start(monkeypatch):
+    """S2: re-/start must upsert display_name + updated_at (contract CMD-01)."""
+    existing = _make_user(display_name="Old Name")
+    session = _make_session()
+
+    monkeypatch.setattr(
+        "bot.users.service.users_repo.get_by_telegram_id",
+        AsyncMock(return_value=existing),
+    )
+    update_mock = AsyncMock(return_value=_make_user(display_name="New Name"))
+    monkeypatch.setattr(
+        "bot.users.service.users_repo.update_display_name",
+        update_mock,
+    )
+
+    result = await users_service.register_or_get(
+        session, telegram_id=123456, display_name="New Name"
+    )
+    update_mock.assert_called_once_with(session, existing, "New Name")
+    assert result.display_name == "New Name"
+
+
 async def test_all_domain_exceptions_defined():
     from bot.shared.exceptions import (
         DeadlineParseError,

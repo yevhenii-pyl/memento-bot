@@ -65,3 +65,41 @@ async def test_parse_deadline_raises_on_empty_content(mock_get_client):
 
     with pytest.raises(DeadlineParseError):
         await parse_deadline("valid deadline text")
+
+
+@patch("bot.shared.claude_client.get_claude_client")
+async def test_parse_deadline_includes_timezone_in_prompt(mock_get_client):
+    """F5: MASTER_TIMEZONE must be anchored in the Claude prompt."""
+    captured: list[dict] = []
+
+    async def capture(**kwargs):
+        captured.extend(kwargs.get("messages", []))
+        return await _make_mock_response("2026-08-01T09:00:00+02:00")
+
+    mock_client = MagicMock()
+    mock_client.messages.create = capture
+    mock_get_client.return_value = mock_client
+
+    await parse_deadline("by 9am", timezone="Europe/Kyiv")
+
+    assert captured, "messages.create was never called"
+    prompt_text = " ".join(str(m) for m in captured)
+    assert "Europe/Kyiv" in prompt_text
+
+
+@patch("bot.shared.claude_client.get_claude_client")
+async def test_parse_deadline_naive_datetime_uses_given_timezone(mock_get_client):
+    """F5: a naive datetime from Claude must be interpreted in the given timezone, not UTC."""
+    from zoneinfo import ZoneInfo
+
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(
+        return_value=await _make_mock_response("2026-08-01T09:00:00")
+    )
+    mock_get_client.return_value = mock_client
+
+    result = await parse_deadline("by 9am", timezone="America/New_York")
+    assert result is not None
+    eastern = ZoneInfo("America/New_York")
+    expected = datetime(2026, 8, 1, 9, 0, 0, tzinfo=eastern).astimezone(UTC)
+    assert result == expected

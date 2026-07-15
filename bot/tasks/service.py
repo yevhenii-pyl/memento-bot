@@ -46,8 +46,12 @@ async def create_task(
         )
 
     master = await users_repo.get_by_telegram_id(session, config.MASTER_TELEGRAM_ID)
+    if master is None:
+        raise WorkerNotRegisteredError(
+            f"Master (ID {config.MASTER_TELEGRAM_ID}) must start the bot in private first."
+        )
 
-    deadline = await claude_client.parse_deadline(raw_deadline)
+    deadline = await claude_client.parse_deadline(raw_deadline, timezone=config.MASTER_TIMEZONE)
     if deadline is None:
         raise DeadlineParseError("Could not parse a deadline from the provided text.")
     if deadline <= datetime.now(UTC):
@@ -56,7 +60,7 @@ async def create_task(
     task = await tasks_repo.create_task(
         session,
         assignee_id=assignee.id,
-        overseer_id=master.id if master is not None else assignee.id,
+        overseer_id=master.id,
         title=title,
         deadline=deadline,
     )
@@ -118,7 +122,9 @@ async def record_extended(
     if task is None or task.status != "pending":
         raise OutcomeAlreadyRecordedError("Outcome already recorded or task not awaiting verdict.")
 
-    new_deadline = await claude_client.parse_deadline(raw_new_deadline)
+    new_deadline = await claude_client.parse_deadline(
+        raw_new_deadline, timezone=config.MASTER_TIMEZONE
+    )
     if new_deadline is None:
         raise DeadlineParseError("Could not parse the new deadline.")
     if new_deadline <= datetime.now(UTC) + _MIN_EXTEND_LEAD:

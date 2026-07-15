@@ -19,11 +19,12 @@ def get_claude_client() -> anthropic.AsyncAnthropic:
     return _client
 
 
-async def parse_deadline(natural_language: str) -> datetime | None:
+async def parse_deadline(natural_language: str, timezone: str = "UTC") -> datetime | None:
     """Return a tz-aware UTC datetime parsed from natural language, or None if unresolvable.
 
     Raises DeadlineParseError on unexpected API errors (empty content).
     Times out after 4 s and returns None.
+    Relative times (e.g. 'by EOD', 'in 2 hours') are anchored to `timezone`.
     """
     client = get_claude_client()
     try:
@@ -35,10 +36,14 @@ async def parse_deadline(natural_language: str) -> datetime | None:
                     {
                         "role": "user",
                         "content": (
+                            f"The team's local timezone is {timezone}. "
                             "Extract the deadline from this text and return ONLY an ISO 8601 "
-                            "datetime (e.g. 2025-01-15T09:00:00+00:00). "
-                            "If you cannot determine a specific date and time, reply with exactly "
-                            "the word NONE. Text: " + natural_language
+                            "datetime with a timezone offset "
+                            "(e.g. 2025-01-15T09:00:00+02:00). "
+                            "Interpret any naive or relative time (e.g. '9am', 'by EOD', "
+                            "'in 2 hours') in the given timezone. "
+                            "If you cannot determine a specific date and time, reply with "
+                            "exactly the word NONE. Text: " + natural_language
                         ),
                     }
                 ],
@@ -62,7 +67,9 @@ async def parse_deadline(natural_language: str) -> datetime | None:
     try:
         dt = dateutil_parser.parse(text)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
+            from zoneinfo import ZoneInfo
+
+            dt = dt.replace(tzinfo=ZoneInfo(timezone))
         return dt.astimezone(UTC)
     except (ValueError, OverflowError):
         return None

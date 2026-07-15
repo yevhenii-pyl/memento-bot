@@ -51,10 +51,12 @@ def cancel_task_jobs(
     scheduler: AsyncIOScheduler, reminder_job_id: str, outcome_job_id: str
 ) -> None:
     """Remove both jobs; tolerates already-removed IDs."""
+    from apscheduler.jobstores.base import JobLookupError
+
     for job_id in (reminder_job_id, outcome_job_id):
         try:
             scheduler.remove_job(job_id)
-        except Exception:
+        except JobLookupError:
             pass
 
 

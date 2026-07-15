@@ -3,10 +3,14 @@ import logging
 import time
 import uuid
 
+from aiogram.exceptions import TelegramAPIError
+
 from bot.config import settings
 from bot.notifications import service as notif_service
 from bot.tasks import repo as tasks_repo
 from bot.users import repo as users_repo
+
+_MAX_DM_ATTEMPTS = 3
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +31,18 @@ async def reminder_job(bot, task_id: str, session_factory) -> None:
         text = notif_service.build_reminder_text(
             task, worker.display_name, settings.MASTER_TIMEZONE
         )
-        try:
-            fire_ts = time.time()
-            await bot.send_message(chat_id=worker.telegram_id, text=text)
-            logger.info("reminder_job: sent reminder for task %s at %.3f", task_id, fire_ts)
-        except Exception:
-            logger.exception("reminder_job: DM delivery failed for task %s", task_id)
+        fire_ts = time.time()
+        for attempt in range(_MAX_DM_ATTEMPTS):
+            try:
+                await bot.send_message(chat_id=worker.telegram_id, text=text)
+                logger.info("reminder_job: sent reminder for task %s at %.3f", task_id, fire_ts)
+                break
+            except TelegramAPIError:
+                if attempt == _MAX_DM_ATTEMPTS - 1:
+                    logger.exception(
+                        "reminder_job: DM delivery failed after %d attempts for task %s",
+                        _MAX_DM_ATTEMPTS, task_id,
+                    )
 
 
 async def outcome_prompt_job(bot, task_id: str, session_factory) -> None:
@@ -52,13 +62,19 @@ async def outcome_prompt_job(bot, task_id: str, session_factory) -> None:
             task, worker_name, settings.MASTER_TIMEZONE
         )
         keyboard = notif_service.build_outcome_keyboard(task.id)
-        try:
-            fire_ts = time.time()
-            await bot.send_message(
-                chat_id=settings.MASTER_TELEGRAM_ID, text=text, reply_markup=keyboard
-            )
-            logger.info(
-                "outcome_prompt_job: sent prompt for task %s at %.3f", task_id, fire_ts
-            )
-        except Exception:
-            logger.exception("outcome_prompt_job: delivery failed for task %s", task_id)
+        fire_ts = time.time()
+        for attempt in range(_MAX_DM_ATTEMPTS):
+            try:
+                await bot.send_message(
+                    chat_id=settings.MASTER_TELEGRAM_ID, text=text, reply_markup=keyboard
+                )
+                logger.info(
+                    "outcome_prompt_job: sent prompt for task %s at %.3f", task_id, fire_ts
+                )
+                break
+            except TelegramAPIError:
+                if attempt == _MAX_DM_ATTEMPTS - 1:
+                    logger.exception(
+                        "outcome_prompt_job: delivery failed after %d attempts for task %s",
+                        _MAX_DM_ATTEMPTS, task_id,
+                    )

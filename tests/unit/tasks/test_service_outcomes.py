@@ -120,6 +120,26 @@ async def test_record_extended_unresolvable_deadline(monkeypatch):
         )
 
 
+async def test_record_done_status_unchanged_on_second_tap(monkeypatch):
+    """AC-13: after Done, a second tap must not mutate status or call update_status again."""
+    pending = _make_task(status="pending")
+    done = _make_task(status="done")
+
+    get_mock = AsyncMock(side_effect=[pending, done])
+    monkeypatch.setattr(f"{_SVC}.tasks_repo.get_by_id", get_mock)
+    update_mock = AsyncMock()
+    monkeypatch.setattr(f"{_SVC}.tasks_repo.update_status", update_mock)
+    monkeypatch.setattr(f"{_SVC}.cancel_task_jobs", MagicMock())
+
+    await task_service.record_done(AsyncMock(), MagicMock(), TASK_ID, "r1", "o1")
+
+    import pytest as _pytest
+    with _pytest.raises(OutcomeAlreadyRecordedError):
+        await task_service.record_done(AsyncMock(), MagicMock(), TASK_ID, "r1", "o1")
+
+    assert update_mock.await_count == 1, "update_status must only be called once"
+
+
 async def test_record_extended_raises_on_non_pending(monkeypatch):
     task = _make_task(status="done")
     _patch(monkeypatch, "tasks_repo.get_by_id", return_value=task)

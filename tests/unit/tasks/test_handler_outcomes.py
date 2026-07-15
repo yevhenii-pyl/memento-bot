@@ -48,9 +48,31 @@ async def test_done_callback_records_outcome(mock_settings, monkeypatch):
     task = _make_task()
     monkeypatch.setattr(f"{_SVC}.task_service.record_done", AsyncMock(return_value=task))
 
-    cb = _make_callback(data=f"done:{TASK_ID}:r1:o1")
+    # Real keyboard emits 2-field format: done:<task_id>
+    cb = _make_callback(data=f"done:{TASK_ID}")
     await handle_done_callback(cb, session=AsyncMock(), bot=AsyncMock())
     cb.answer.assert_awaited_once()
+
+
+@patch(f"{_SVC}.settings")
+async def test_done_callback_passes_deterministic_job_ids(mock_settings, monkeypatch):
+    """F2: handler must derive job IDs from task_id, not from stale callback_data fields."""
+    from bot.tasks.handler import handle_done_callback
+
+    mock_settings.MASTER_TELEGRAM_ID = MASTER_TG_ID
+    mock_settings.MASTER_TIMEZONE = "UTC"
+
+    task = _make_task()
+    record_mock = AsyncMock(return_value=task)
+    monkeypatch.setattr(f"{_SVC}.task_service.record_done", record_mock)
+
+    cb = _make_callback(data=f"done:{TASK_ID}")
+    await handle_done_callback(cb, session=AsyncMock(), bot=AsyncMock(), scheduler=MagicMock())
+
+    record_mock.assert_awaited_once()
+    call_kwargs = record_mock.call_args.kwargs
+    assert call_kwargs.get("reminder_job_id") == f"reminder:{TASK_ID}"
+    assert call_kwargs.get("outcome_job_id") == f"outcome:{TASK_ID}"
 
 
 @patch(f"{_SVC}.settings")
@@ -65,7 +87,7 @@ async def test_done_callback_already_recorded(mock_settings, monkeypatch):
         AsyncMock(side_effect=OutcomeAlreadyRecordedError("already")),
     )
 
-    cb = _make_callback(data=f"done:{TASK_ID}:r1:o1")
+    cb = _make_callback(data=f"done:{TASK_ID}")
     await handle_done_callback(cb, session=AsyncMock(), bot=AsyncMock())
     cb.answer.assert_awaited()
     reply_text = cb.answer.call_args.args[0] if cb.answer.call_args.args else ""
@@ -84,7 +106,7 @@ async def test_failed_callback_sends_worker_dm(mock_settings, monkeypatch):
     monkeypatch.setattr(f"{_SVC}.task_service.record_failed", AsyncMock(return_value=task))
     monkeypatch.setattr(f"{_SVC}.users_repo.get_by_id", AsyncMock(return_value=worker))
 
-    cb = _make_callback(data=f"failed:{TASK_ID}:r1:o1")
+    cb = _make_callback(data=f"failed:{TASK_ID}")
     bot = AsyncMock()
     await handle_failed_callback(cb, session=AsyncMock(), bot=bot)
 
@@ -99,7 +121,7 @@ async def test_non_master_callback_ignored(mock_settings, monkeypatch):
 
     mock_settings.MASTER_TELEGRAM_ID = MASTER_TG_ID
 
-    cb = _make_callback(user_id=WORKER_TG_ID, data=f"done:{TASK_ID}:r1:o1")
+    cb = _make_callback(user_id=WORKER_TG_ID, data=f"done:{TASK_ID}")
     create_mock = AsyncMock()
     monkeypatch.setattr(f"{_SVC}.task_service.record_done", create_mock)
     await handle_done_callback(cb, session=AsyncMock(), bot=AsyncMock())
