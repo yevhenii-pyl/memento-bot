@@ -190,23 +190,68 @@ C4Container
      📌 e.g. «author → web: composes draft → web → content API: save». Seed the primary flow(s) here;
      the `sequences` stage then covers every §5 AC (no cap). Never N/A for M+; XS/S keeps ≥1 happy-path flow. -->
 
-**Critical flow 1: <flow name>**
+**Critical flow 1: Master assigns a task (capture)** — AC-01, AC-09, AC-10, AC-12.
 
 ```mermaid
 sequenceDiagram
-    actor Actor
-    participant Web
-    participant Service
-    participant Store
-    Actor->>Web: <action>
-    Web->>Service: <call>
-    Service->>Store: <write>
-    Store-->>Service: ok
-    Service-->>Web: result
-    Web-->>Actor: confirmation
+    actor Master
+    participant TG as Telegram
+    participant H as tasks.handler
+    participant S as tasks.service
+    participant C as Claude
+    participant R as repos
+    participant Sch as Scheduler
+    participant DB as PostgreSQL
+    Master->>TG: /task @Worker <desc> <deadline>
+    TG->>H: update (in MASTER_GROUP_CHAT_ID)
+    H->>S: create assigned task
+    S->>S: authorize sender is Master to assign
+    S->>C: parse deadline (anchored to MASTER_TIMEZONE)
+    C-->>S: ISO datetime or unresolved
+    alt resolved, future, Worker registered
+        S->>R: insert task (status open)
+        R->>DB: persist task
+        S->>Sch: schedule reminder (T-5min) + outcome prompt (T)
+        Sch->>DB: persist jobs
+        S-->>H: task created
+        H->>TG: DM Worker acknowledgement + group confirmation
+    else unresolved / past / unauthorized / unregistered
+        S-->>H: domain error
+        H->>TG: explain + ask to rephrase
+    end
 ```
 
-**Critical flow 2: <e.g. async event propagation>** — <if applicable, otherwise N/A>.
+**Critical flow 2: deadline outcome + idempotency** — AC-04, AC-05, AC-11, AC-13.
+
+```mermaid
+sequenceDiagram
+    participant Sch as Scheduler
+    participant J as notifications.jobs
+    participant DB as PostgreSQL
+    actor Master
+    participant H as tasks.handler
+    participant S as tasks.service
+    actor Worker
+    Sch->>J: fire outcome job at deadline
+    J->>DB: load task
+    J->>Master: DM prompt Done / Failed / Extended (inline buttons)
+    Master->>H: taps Failed (callback)
+    H->>S: record outcome (failed)
+    S->>S: verify caller is Master AND task still awaiting outcome
+    alt still awaiting this deadline
+        S->>DB: status=failed, resolved_at=now
+        S-->>H: recorded
+        H->>Worker: DM "marked failed by Master"
+    else already resolved / stale prompt
+        S-->>H: no-op (idempotent)
+        H->>Master: "outcome already recorded / no longer active"
+    end
+```
+
+> **Extend** (AC-06, AC-14): on "Extended" the Master supplies a new deadline via an aiogram FSM
+> reply; the service validates it is ≥ 5 min future, logs the extension (increments
+> `extension_count`), resets status to `open`, and reschedules both jobs (ADR-0001, ADR-0005).
+> The full per-AC sequence set is produced by the `sequences` stage.
 
 ## 7. Deployment view
 
