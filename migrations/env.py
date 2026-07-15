@@ -23,10 +23,8 @@ if db_url:
 # Import all feature model modules so their metadata is registered
 # on Base before --autogenerate runs.  Add new model imports here.
 from bot.shared.db import Base  # noqa: E402, F401
-
-# (future feature models will be imported here, e.g.:)
-# from bot.tasks.models import Task  # noqa: E402, F401
-# from bot.users.models import User  # noqa: E402, F401
+from bot.tasks.models import Task  # noqa: E402, F401
+from bot.users.models import User  # noqa: E402, F401
 
 target_metadata = Base.metadata
 
