@@ -15,26 +15,21 @@ target_surfaces: []  # filled in §4 — subset of: backend-service | web-fronte
 
 ## 1. Introduction and goals
 
-<!-- 🎯 Why: durable memory of «what + the three dominant qualities + who cares». A year from
-     now nobody recalls which three qualities were critical for this system.
-     📋 Write: 1 ¶ intent + 3 lines of top-3 quality goals + a stakeholders table.
-     ¶4 is the override slot — critic `Override` resolutions emit «Decision override: <headline>
-     — rationale: <reason>» bullets here so downstream skills see the deliberate choice. -->
-
-**Intent.** <One paragraph from spec §2 Goals — what we're building and for whom.>
+**Intent.** Memento task-core closes the verbal-commitment accountability loop for a Telegram team. A single `/task` command in the configured Master group chat captures a commitment — Master-assigned (`/task @Worker <desc> <deadline>`) or Worker self-committed (`/task <desc> <deadline>`) — with a Claude-parsed deadline and a named Worker. A private reminder reaches the Worker 5 minutes before the deadline; at the deadline the Master receives a private Done / Failed / Extended prompt whose structured verdict is persisted. Extended tasks re-enter the full cycle with a new Master-supplied deadline. This is the **foundational** feature of the Memento bot — every downstream feature (statistics, reporting, escalation) depends on the audit trail it creates.
 
 **Top-3 quality goals (1-liners; full scenarios in §10):**
 
-1. <e.g. "Availability under partial failure of a downstream module">
-2. <e.g. "Read performance for the dashboard under data-scale growth">
-3. <e.g. "Recoverability with <30 min RTO">
+1. **Notification timing reliability** — reminders and outcome prompts fire on time and survive bot restarts (zero scheduled jobs lost, ≤ 60 s drift). This *is* the product's value.
+2. **Audit-trail integrity** — only the Master assigns to others and records outcomes; outcome transitions are idempotent, so the persisted verdict is always trustworthy.
+3. **Task-creation responsiveness** — capturing a commitment (including deadline parsing) stays within p95 ≤ 5 s so the group conversation isn't held up.
 
 **Stakeholders.**
 
 | Role | Interest | Sign-off owner? |
 |---|---|---|
-| <author role from glossary> | <feature usage> | No |
-| <consumer role from glossary> | <read usage> | No |
+| Master | Assigns tasks, records outcomes, monitors Worker commitments | No |
+| Worker | Self-commits, receives reminders and verdicts, lists own open tasks | No |
+| Product Owner | Owns the spec + the accountability-loop outcomes | No |
 | Tech Lead | SAD approval | Yes |
 
 <!-- Decision overrides (¶4) — populated by the critic resolution loop, empty otherwise. -->
@@ -48,23 +43,24 @@ target_surfaces: []  # filled in §4 — subset of: backend-service | web-fronte
      Never N/A — every feature inherits at least Conventions + Technical. -->
 
 **Technical.**
-- <Language + version>
-- <Framework(s) + version>
-- <Datastore(s) + version>
-- <Architecture convention — e.g. the layering style from the project convention file>
+- Python 3.12; aiogram 3.x (async-native, built-in FSM) as the Telegram framework.
+- PostgreSQL 16 via SQLAlchemy 2 (async) + asyncpg driver; Alembic migrations.
+- APScheduler 3.x (`AsyncIOScheduler`) with a PostgreSQL job store for restart-safe timers.
+- Anthropic Claude API (`claude-sonnet-4-6`) for natural-language deadline parsing; Pydantic Settings v2 for config.
+- Feature-module layering — each feature lives in `bot/<feature>/` as `handler` · `service` · `repo` · `models` (per `CLAUDE.md`).
 
 **Organisational.**
-- <Effort budget — e.g. 3 person-weeks>
-- <Deadline — e.g. 2026-Q3 hard>
-- <Team composition>
+- Single-team, single-Master, single-bot-instance deployment (no horizontal scaling in v1).
+- SDD + TDD workflow (red → green → refactor); per-task gate = pytest + ruff + mypy.
+- First feature of a greenfield repo — sets precedent for every later feature.
 
 **Conventions.**
-- <Link to the project's convention file>
-- <Naming, ID strategy, error-handling pattern>
+- [`CLAUDE.md`](../../../CLAUDE.md) is authoritative: router-per-feature registered in `bot/main.py`; `AsyncSession` injected by `DbSessionMiddleware`; all SQL in `<feature>/repo.py`; services raise domain exceptions from `bot/shared/exceptions.py`.
+- ID strategy: all primary keys are `UUID` (`uuid.uuid4()`) stored as PostgreSQL `UUID`.
+- All Claude calls go through `bot/shared/claude_client.py`; all APScheduler jobs live in `bot/notifications/jobs.py`.
 
 **Regulatory / external.**
-- <e.g. data-retention / deletion behaviour per ADR-NNNN>
-- <e.g. applicable compliance controls, or N/A with a reason>
+- Data classification: Internal — task titles, deadlines, outcomes are operational team data. Personal data limited to Telegram user IDs, display names, and chat IDs (already present on the Telegram platform); no financial/health/government identifiers. No new authorization boundary beyond the `MASTER_TELEGRAM_ID` / `MASTER_GROUP_CHAT_ID` identity checks (spec §6.1).
 
 ## 3. Context and scope
 
@@ -75,30 +71,38 @@ target_surfaces: []  # filled in §4 — subset of: backend-service | web-fronte
      Trust boundary — the line past which you don't trust data without checking it.
      Never N/A — greenfield still draws the planned actors + external systems. -->
 
-<Business context in 2–3 sentences. What the system does for whom.>
+The Memento bot serves one team over Telegram. The Master and Workers interact with it exclusively through Telegram — there is no other UI. The bot depends on exactly two external systems: **Telegram** (delivers updates and button taps, receives outbound messages and inline keyboards) and the **Claude API** (parses natural-language deadlines into ISO datetimes). The **trust boundary** sits at the bot: it trusts only Telegram *user IDs* (never display names), only `MASTER_TELEGRAM_ID` for privileged actions (assigning to others, recording outcomes), and only messages originating in `MASTER_GROUP_CHAT_ID` for task capture. Everything crossing that boundary is validated before it is acted on.
 
-<!-- brownfield: <one-line scan summary> (or «N/A — greenfield repo» if no source existed) -->
+<!-- brownfield: N/A — greenfield repo (architecture-map.md is the target baseline, reflects_commit n/a) -->
 
 **External systems (in / out):**
 
 | Actor or system | Type | Interaction |
 |---|---|---|
-| <author role> | Person | <what they do> |
-| <external service> | System (internal/external) | <interaction> |
-| <identity provider> | System (external) | <provides auth tokens> |
+| Master | Person | Sends `/task` in the group chat; taps Done/Failed/Extended and supplies new deadlines in private; lists a Worker's open tasks |
+| Worker | Person | Self-commits via `/task`; receives private reminders + verdicts; lists own open tasks |
+| Telegram | System (external) | Delivers updates & callback taps to the bot; delivers the bot's messages + inline keyboards to users |
+| Claude API | System (external) | Parses a natural-language deadline string into an ISO datetime |
 
-**C4 Context (L1):** <!-- syntax → references/c4-mermaid-syntax.md. Real names, no <placeholder> stubs. -->
+**C4 Context (L1):**
 
 ```mermaid
 C4Context
-    title <feature> — System Context
+    title memento-task-core — System Context
 
-    Person(actor, "<Actor role>", "<intent>")
-    System(app, "<Our system>", "<one-sentence description>")
-    System_Ext(ext, "<External system>", "<one-sentence description>")
+    Person(master, "Master", "Assigns tasks, records Done/Failed/Extended verdicts")
+    Person(worker, "Worker", "Self-commits, receives reminders and verdicts")
 
-    Rel(actor, app, "<interaction>", "<protocol>")
-    Rel(app, ext, "<interaction>", "<protocol>")
+    System(memento, "Memento bot", "Captures commitments, schedules reminders + outcome prompts, persists the audit trail")
+
+    System_Ext(telegram, "Telegram", "Messaging platform delivering updates and carrying outbound messages")
+    System_Ext(claude, "Claude API", "Anthropic LLM parsing natural-language deadlines into ISO datetimes")
+
+    Rel(master, telegram, "sends /task, taps outcome buttons", "Telegram")
+    Rel(worker, telegram, "sends /task, reads reminders", "Telegram")
+    Rel(telegram, memento, "delivers updates & callbacks", "long-polling")
+    Rel(memento, telegram, "sends messages + inline keyboards", "Bot API")
+    Rel(memento, claude, "parses deadline text", "HTTPS / Messages API")
 ```
 
 ## 4. Solution strategy
