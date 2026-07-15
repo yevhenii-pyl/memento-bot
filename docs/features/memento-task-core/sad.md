@@ -4,7 +4,7 @@ owner: "Architect / Tech Lead"
 reviewers: ["Tech Lead"]
 updated_at: "2026-07-15"
 feature_size: "M"
-target_surfaces: []  # filled in §4 — subset of: backend-service | web-frontend | mobile-app | desktop-app | cli | worker | library-sdk. Read (never re-derived) by api/sequences/tasks/plan-tests/review → _shared/surfaces.md
+target_surfaces: [backend-service]  # filled in §4 — subset of: backend-service | web-frontend | mobile-app | desktop-app | cli | worker | library-sdk. Read (never re-derived) by api/sequences/tasks/plan-tests/review → _shared/surfaces.md
 ---
 
 # Software Architecture Document — memento-task-core
@@ -113,13 +113,16 @@ C4Context
      📋 Write: 3–4 choices; each a heading + 2–3 sentences of rationale.
      📌 «Store content as a table of typed blocks» is a pillar — ADR-0001 grows from it. -->
 
+**Target surface (D4.1):** `backend-service` — a single long-running aiogram process that consumes Telegram updates *and* hosts the in-process `AsyncIOScheduler`. Telegram is the UI (external); there is no web/mobile/CLI surface. This is a single, forced surface (the single-bot-instance constraint), so it is recorded in frontmatter `target_surfaces: [backend-service]` and drawn as one §5 container — no multi-surface ADR.
+
 **Top strategic choices (the seeds for ADRs):**
 
-1. **<e.g. Module isolation through events>** — <2–3 sentences citing quality goals + constraints>.
-2. **<e.g. Single-store persistence>** — <2–3 sentences>.
-3. **<e.g. Server-rendered read side>** — <2–3 sentences>.
+1. **Single-process, event-driven bot over one store** — one aiogram process handles updates and runs the async scheduler; PostgreSQL 16 is the single store for domain data *and* scheduled timers. Serves the single-instance constraint and keeps operational surface minimal (§2). Durable scheduling → **ADR-0001**.
+2. **Durable timers as the backbone (ADR-0001)** — every task owns two persisted APScheduler jobs (reminder at T-5min, outcome prompt at T) in a PostgreSQL job store, so pending timers survive a restart (QG-1, spec §6 "zero jobs lost across restarts", ≤ 60 s drift). Extend reschedules both jobs for the new deadline.
+3. **Config-anchored trust (ADR-0003, ADR-0004)** — identity/authz and time both anchor to configuration: the Master is `MASTER_TELEGRAM_ID`, capture is confined to `MASTER_GROUP_CHAT_ID`, and one team `MASTER_TIMEZONE` governs both the relative-deadline parse anchor and all display. Timestamps persist as timezone-aware UTC. Keeps v1 single-Master / single-team and protects the audit trail's integrity (QG-2, spec §6.1).
+4. **Synchronous, validated capture with an idempotent state machine (ADR-0002, ADR-0005)** — deadline parsing (Claude) + validation run inline during `/task`, trading a small latency budget (p95 ≤ 5 s, QG-3) for immediate group-chat feedback (AC-09). A single `status` field drives the task lifecycle (open → done/failed; Extend logs an extension, increments `extension_count`, and resets to open); outcome callbacks act only while the task still awaits an outcome, making stale/replayed taps idempotent (AC-13, QG-2).
 
-Each tactical decision in later sections should trace to one of these seeds. Tactical decisions that *contradict* a strategic choice are red flags — surface them in §11.
+Each tactical decision in later sections should trace to one of these seeds. Tactical decisions that *contradict* a strategic choice are red flags — surfaced in §11.
 
 ## 5. Building block view
 
