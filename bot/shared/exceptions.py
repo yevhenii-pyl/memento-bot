@@ -14,5 +14,21 @@ class DeadlineParseError(MementoError):
     pass
 
 
+class DeadlineTooSoonError(MementoError):
+    pass
+
+
+class DeadlineInPastError(MementoError):
+    pass
+
+
+class OutcomeAlreadyRecordedError(MementoError):
+    pass
+
+
 class UnauthorizedError(MementoError):
+    pass
+
+
+class WorkerNotRegisteredError(MementoError):
     pass
